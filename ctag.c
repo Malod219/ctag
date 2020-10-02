@@ -2,9 +2,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
-#define CURSOR_INVIS 0
-#define ESCAPE_KEY  27
+#define CURSOR_INVIS    0
+/* We get keys correspond to ASCII integer value */
+#define KEY_QUIT    0x71
+#define KEY_TAB     0x09
+
+int g_row;
+int g_col;
 
 typedef struct windowData {
     WINDOW* window;
@@ -37,12 +43,12 @@ void create_newwin(int height, int width, int starty, int startx, int boxed, cha
 void render(void);
 void drawwindow(windowData *wd);
 void initialisecolors(void);
+void getdirectoryinfo();
 
 int main( int argc, char *argv[]) {
-    int row, col;
     int ch;
     char * toptext = "Made by RisingThumb          https://risingthumb.xyz ";
-    char * bottomtext = "TAB switch menu    ESC quit";
+    char * bottomtext = "TAB switch menu    Q to quit";
     windowData dirwin, editwin, panwin, panwinbottom;
 
     windows.directory = &dirwin;
@@ -52,31 +58,51 @@ int main( int argc, char *argv[]) {
     windows.state = dir;
 
     initscr();
+    keypad(stdscr, TRUE);
     noecho();
     curs_set(CURSOR_INVIS);
     raw();
     start_color();
     initialisecolors();
     refresh();
-    getmaxyx(stdscr, row, col);
+    getmaxyx(stdscr, g_row, g_col);
              /*  height, width,  y, x,          boxed,  title, windowData */
-    create_newwin(row-2, col/2, 1, 0, 1, "-Directory-", dir, &dirwin);
-    create_newwin(row-2, col/2, 1, col/2, 1, "-Files-", edit, &editwin);
-    create_newwin(1, col, 0, (col-strlen(toptext))/2, 0, toptext, never, &panwin);
-    create_newwin(1, col, row-1, (col-strlen(bottomtext))/2, 0, bottomtext, never, &panwinbottom);
+    create_newwin(g_row-2, g_col/2, 1, 0, 1, "-Directory-", dir, &dirwin);
+    create_newwin(g_row-2, g_col/2, 1, g_col/2, 1, "-Files-", edit, &editwin);
+    create_newwin(1, g_col, 0, (g_col-strlen(toptext))/2, 0, toptext, never, &panwin);
+    create_newwin(1, g_col, g_row-1, (g_col-strlen(bottomtext))/2, 0, bottomtext, never, &panwinbottom);
 
-    for(render(); (ch = getch()) != ESCAPE_KEY; render()){
+    for(render(); tolower(ch = getch()) != KEY_QUIT; render()){
         switch(ch) {
-            case '\t':
+            case KEY_TAB:
                 if (windows.state == edit)
                     windows.state = dir;
                 else
                     windows.state = edit;
-                break;
+                continue;
         }
     }
     endwin();
     return 0;
+}
+
+void getdirectoryinfo() {
+    int errno;
+    FILE *fp;
+    int width = getmaxx(windows.directory->window);
+    char line[width];
+    int i = 1;
+
+    errno = system("ls -1 > /tmp/ctag-temp");
+    if (errno != 0)
+        return; /* todo: unfuck. Return error to user */
+    fp = fopen("/tmp/ctag-temp", "r");
+    while(fgets(line, sizeof(line), fp) != NULL) {
+        mvwprintw(windows.directory->window, i++, 1, line);
+    }
+    fclose(fp);
+
+
 }
 
 void initialisecolors() {
@@ -95,7 +121,9 @@ void create_newwin(int height, int width, int starty, int startx, int boxed, cha
 }
 
 void render() {
+    getdirectoryinfo();
     drawwindow(windows.directory);
+
     drawwindow(windows.editor);
     drawwindow(windows.toppanel);
     drawwindow(windows.bottompanel);
