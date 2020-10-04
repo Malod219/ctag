@@ -62,7 +62,7 @@ enum keys {
 };
 
 const struct keyData keyTable[] = {
-    /* key int,     func pointer */
+    /* key int,     func pointer... array elements match with states(as they start at 1). More pointers? */
     {kb_quit,       NULL}, /* For loop assumes it is first element. Func pointer unused */
     {kb_enter,      kbf_enter},
     {kb_tab,        kbf_tab},
