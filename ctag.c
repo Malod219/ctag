@@ -1,36 +1,48 @@
 #include <ncurses.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <dirent.h>
 
 #define CURSOR_INVIS    0
-/* We get keys correspond to ASCII integer value */
-#define KEY_QUIT    0x71
-#define KEY_TAB     0x09
-#define KEY_ENT     0x0a
-
 #define DIRECTORYLINES 1000
 #define MAXDIRWIDTH 256
-#define STRBUFF 66
-#define STRBUFFET 200
-
-char dirlines[DIRECTORYLINES][MAXDIRWIDTH]; // Consider a malloc approach, so it extends to any directory with size>1000
-char *filenameEditing;
 
 typedef struct windowData {
     WINDOW* window;
     int     boxed;
     char*   titleBar;
     int     state;
-    int     id; // Corresponds with position when scrolling up/down
-    int     sel_id; // Corresponds with selected element
-    int     size; // Size in number of elements
+    int     id;
+    int     sel_id;
+    int     size;
 } windowData;
+
+void createNewWindow(int height, int width, int starty, int startx, int boxed, char* title, int state, windowData *wd);
+void render(void);
+void drawWindow(windowData *wd);
+void initialiseColors(void);
+void getDirectoryInfo(int *size);
+void drawDirectory(windowData *wd);
+int isRegularFile(char* filename);
+int compare(const void* pa, const void *pb);
+
+/* key functions */
+void kbf_quit(void);
+void kbf_enter(void);
+void kbf_tab(void);
+void kbf_up(void);
+void kbf_down(void);
+
+char dirlines[DIRECTORYLINES][MAXDIRWIDTH]; /* Consider a malloc approach, so it extends to any directory with size>1000 */
+char *filenameEditing;
+
+struct keyData {
+    int     key;
+    void    (*kfunc)(void);
+};
 
 struct windows{
     windowData* directory;
@@ -39,6 +51,24 @@ struct windows{
     windowData* bottompanel;
     int         state;
 } windows;
+
+/* based on ASCII table. We used Hex or Ncurses-provided values */
+enum keys {
+    kb_quit = 0x71,
+    kb_tab = 0x09,
+    kb_enter = 0x0a,
+    kb_down = KEY_DOWN,
+    kb_up = KEY_UP
+};
+
+const struct keyData keyTable[] = {
+    /* key int,     func pointer */
+    {kb_quit,       NULL}, /* For loop assumes it is first element. Func pointer unused */
+    {kb_enter,      kbf_enter},
+    {kb_tab,        kbf_tab},
+    {kb_up,         kbf_up},
+    {kb_down,       kbf_down},
+};
 
 enum states {
     never = 0,
@@ -52,22 +82,13 @@ enum colorpairs {
     panel
 };
 
-void createNewWindow(int height, int width, int starty, int startx, int boxed, char* title, int state, windowData *wd);
-void render(void);
-void drawWindow(windowData *wd);
-void initialiseColors(void);
-void getDirectoryInfo(int *size);
-void drawDirectory(windowData *wd);
-int isRegularFile(char* filename);
-int compare(const void* pa, const void *pb);
 
 int main( int argc, char *argv[]) {
     int ch;
     int row, col;
     char * toptext = "Made by RisingThumb          https://risingthumb.xyz ";
     char * bottomtext = "TAB switch menu    Q to quit";
-    int *sel_id;
-    int *size;
+    int i;
     windowData dirwin, editwin, panwin, panwinbottom;
 
     windows.directory = &dirwin;
@@ -93,46 +114,61 @@ int main( int argc, char *argv[]) {
     createNewWindow(1, col, row-1, (col-strlen(bottomtext))/2, 0, bottomtext, never, &panwinbottom);
 
     getDirectoryInfo(&windows.directory->size);
-    for(render(); (ch = tolower(getch())) != KEY_QUIT; render()){
-        if (windows.state == dir) {
-            sel_id = &windows.directory->sel_id;
-            size = &windows.directory->size;
-            switch(ch) {
-                case KEY_TAB:
-                    windows.state = edit;
-                    continue;
-                case KEY_DOWN:
-                    if ((*sel_id) < (*size) - 1)
-                        (*sel_id) += 1;
-                    continue;
-                case KEY_UP:
-                    if (*sel_id > 0)
-                        (*sel_id) -= 1;
-                    continue;
-                case KEY_ENT:
-                    wclear(windows.directory->window);
-                    wclear(windows.editor->window);
-                    if ( isRegularFile(dirlines[*sel_id]) ) {
-                        windows.state = edit;
-                        filenameEditing = dirlines[*sel_id];
-                    }
-                    else {
-                        if (chdir(dirlines[*sel_id]) == 0)
-                            (*sel_id) = 0;
-                        getDirectoryInfo(size);
-                    }
-                    continue;
-            }
-        }
-        if (windows.state == edit) {
-            switch(ch) {
-                case KEY_TAB:
-                    windows.state = dir;
+    for(render(); (ch = tolower(getch())) != keyTable[0].key; render()){
+        for (i = 1; i < (sizeof(keyTable) / sizeof(struct keyData)); i++) {
+            if (ch == keyTable[i].key) {
+                (*keyTable[i].kfunc)();
             }
         }
     }
     endwin();
     return 0;
+}
+
+void kbf_enter() {
+    if (windows.state == dir) {
+        int* sel_id = &windows.directory->sel_id;
+        int* size = &windows.directory->size;
+        wclear(windows.directory->window);
+        wclear(windows.editor->window);
+        if ( isRegularFile(dirlines[*sel_id]) ) {
+            windows.state = edit;
+            filenameEditing = dirlines[*sel_id];
+        }
+        else {
+            if (chdir(dirlines[*sel_id]) == 0)
+                (*sel_id) = 0;
+            getDirectoryInfo(size);
+        }
+    }
+    return;
+}
+
+void kbf_tab() {
+    if (windows.state == dir)
+        windows.state = edit;
+    else if ((windows.state = edit))
+        windows.state = dir;
+    return;
+}
+
+void kbf_up() {
+    if (windows.state == dir) {
+        int* sel_id = &windows.directory->sel_id;
+        if (*sel_id > 0)
+            (*sel_id) -= 1;
+    }
+    return;
+}
+
+void kbf_down() {
+    if (windows.state == dir) {
+        int* sel_id = &windows.directory->sel_id;
+        int* size = &windows.directory->size;
+        if ((*sel_id) < (*size) - 1)
+            (*sel_id) += 1;
+    }
+    return;
 }
 
 int isRegularFile(char* filename) {
@@ -149,9 +185,8 @@ void getDirectoryInfo(int *size) {
     dir = opendir(".");
     strcpy(dirlines[i++], "..");
     while((dp = readdir(dir)) != NULL)
-        if (dp->d_name[0] != '.') {
+        if (dp->d_name[0] != '.')
             strcpy(dirlines[i++], dp->d_name);
-            }
     qsort(&dirlines, i, MAXDIRWIDTH, compare);
     *size = i;
 }
@@ -169,9 +204,9 @@ void initialiseColors() {
 void createNewWindow(int height, int width, int starty, int startx, int boxed, char* title, int state, windowData *wd) {
     WINDOW *local_win;
     local_win = newwin(height, width, starty, startx);
-    wd->window=local_win;
-    wd->boxed=boxed;
-    wd->titleBar=title;
+    wd->window = local_win;
+    wd->boxed = boxed;
+    wd->titleBar = title;
     wd->state = state;
     wd->id = 0;
     wd->sel_id = 0;
@@ -179,7 +214,6 @@ void createNewWindow(int height, int width, int starty, int startx, int boxed, c
 }
 
 void render() {
-
     drawDirectory(windows.directory);
     drawWindow(windows.directory);
 
@@ -195,7 +229,7 @@ void drawDirectory(windowData *wd) {
     for(; i < wd->size; i++) {
         if (wd->sel_id == i)
             wattron(w, A_REVERSE);
-        mvwprintw(w, i+1, 1, dirlines[i]);
+        mvwprintw(w, i + 1, 1, dirlines[i]);
         wattroff(w, A_REVERSE);
     }
 }

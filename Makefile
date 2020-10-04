@@ -3,7 +3,7 @@ PROG=ctag
 CURSES=-lncurses -lmenu -lform
 CURSESW=-lncursesw -lmenuw -lformw -D_CURSESW_WIDE
 FILES=ctag.c
-CFLAGS+=-std=c99 -pedantic -Wall
+CFLAGS+=-std=c89 -pedantic -Wall
 LDFLAGS+=-L/usr/local/lib -lstdc++
 
 all:
