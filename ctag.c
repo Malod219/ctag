@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <signal.h>
 
 #define CURSOR_INVIS    0
 #define DIRECTORYLINES 1000
@@ -17,7 +18,7 @@ typedef struct windowData {
     int     state;
     int     id;
     int     sel_id;
-    int     size;
+    int     dir_size;
 } windowData;
 
 void createNewWindow(int height, int width, int starty, int startx, int boxed, char* title, int state, windowData *wd);
@@ -28,6 +29,10 @@ void getDirectoryInfo(int *size);
 void drawDirectory(windowData *wd);
 int isRegularFile(char* filename);
 int compare(const void* pa, const void *pb);
+void resizehandler(int sig);
+void terminal_stop();
+void terminal_start();
+void get_window_dimensions();
 
 /* key functions */
 void kbf_quit(void);
@@ -35,9 +40,15 @@ void kbf_enter(void);
 void kbf_tab(void);
 void kbf_up(void);
 void kbf_down(void);
+void kbf_resize(void);
 
 char dirlines[DIRECTORYLINES][MAXDIRWIDTH]; /* Consider a malloc approach, so it extends to any directory with size>1000 */
+
+
 char *filenameEditing;
+
+char * toptext = "Made by RisingThumb          https://risingthumb.xyz ";
+char * bottomtext = "TAB switch menu    Q to quit";
 
 struct keyData {
     int     key;
@@ -68,6 +79,7 @@ const struct keyData keyTable[] = {
     {kb_tab,        kbf_tab},
     {kb_up,         kbf_up},
     {kb_down,       kbf_down},
+    {KEY_RESIZE,    kbf_resize}, /* Need to check if this is defined. KEY_RESIZE doesn't always exist... */
 };
 
 enum states {
@@ -85,9 +97,6 @@ enum colorpairs {
 
 int main( int argc, char *argv[]) {
     int ch;
-    int row, col;
-    char * toptext = "Made by RisingThumb          https://risingthumb.xyz ";
-    char * bottomtext = "TAB switch menu    Q to quit";
     int i;
     windowData dirwin, editwin, panwin, panwinbottom;
 
@@ -97,6 +106,29 @@ int main( int argc, char *argv[]) {
     windows.bottompanel = &panwinbottom;
     windows.state = dir;
 
+    terminal_start();
+    createNewWindow(LINES-2, COLS/2, 1, 0, 1, "-Directory-", dir, &dirwin);
+    createNewWindow(LINES-2, COLS/2, 1, COLS/2, 1, "-Files-", edit, &editwin);
+    createNewWindow(1, COLS, 0, 0, 0, toptext, never, &panwin);
+    createNewWindow(1, COLS, LINES-1, 0, 0, bottomtext, never, &panwinbottom);
+
+    getDirectoryInfo(&windows.directory->dir_size);
+    for(render(); (ch = tolower(getch())) != keyTable[0].key; render()){
+        for (i = 1; i < (sizeof(keyTable) / sizeof(struct keyData)); i++) {
+            if (ch == keyTable[i].key) {
+                (*keyTable[i].kfunc)();
+            }
+        }
+    }
+    terminal_stop();
+    return 0;
+}
+
+void terminal_stop() {
+    endwin();
+}
+
+void terminal_start() {
     initscr();
     keypad(stdscr, TRUE);
     noecho();
@@ -105,30 +137,12 @@ int main( int argc, char *argv[]) {
     start_color();
     initialiseColors();
     refresh();
-    getmaxyx(stdscr, row, col);
-
-    /* Create windows accordingly */
-    createNewWindow(row-2, col/2, 1, 0, 1, "-Directory-", dir, &dirwin);
-    createNewWindow(row-2, col/2, 1, col/2, 1, "-Files-", edit, &editwin);
-    createNewWindow(1, col, 0, (col-strlen(toptext))/2, 0, toptext, never, &panwin);
-    createNewWindow(1, col, row-1, (col-strlen(bottomtext))/2, 0, bottomtext, never, &panwinbottom);
-
-    getDirectoryInfo(&windows.directory->size);
-    for(render(); (ch = tolower(getch())) != keyTable[0].key; render()){
-        for (i = 1; i < (sizeof(keyTable) / sizeof(struct keyData)); i++) {
-            if (ch == keyTable[i].key) {
-                (*keyTable[i].kfunc)();
-            }
-        }
-    }
-    endwin();
-    return 0;
 }
 
 void kbf_enter() {
     if (windows.state == dir) {
         int* sel_id = &windows.directory->sel_id;
-        int* size = &windows.directory->size;
+        int* size = &windows.directory->dir_size;
         wclear(windows.directory->window);
         wclear(windows.editor->window);
         if ( isRegularFile(dirlines[*sel_id]) ) {
@@ -142,6 +156,24 @@ void kbf_enter() {
         }
     }
     return;
+}
+
+void kbf_resize() {
+    terminal_stop();
+    terminal_start();
+    wclear(windows.directory->window);
+    wclear(windows.editor->window);
+    wclear(windows.toppanel->window);
+    wclear(windows.bottompanel->window);
+
+    wresize(windows.directory->window, LINES-2, COLS/2);
+    mvwin(windows.directory->window, 1, 0);
+    wresize(windows.editor->window, LINES-2, COLS/2);
+    mvwin(windows.editor->window, 1, COLS/2);
+    wresize(windows.toppanel->window, 1, COLS);
+    mvwin(windows.toppanel->window, 0, 0);
+    wresize(windows.bottompanel->window, 1, COLS);
+    mvwin(windows.bottompanel->window, LINES-1, 0);
 }
 
 void kbf_tab() {
@@ -164,7 +196,7 @@ void kbf_up() {
 void kbf_down() {
     if (windows.state == dir) {
         int* sel_id = &windows.directory->sel_id;
-        int* size = &windows.directory->size;
+        int* size = &windows.directory->dir_size;
         if ((*sel_id) < (*size) - 1)
             (*sel_id) += 1;
     }
@@ -210,27 +242,55 @@ void createNewWindow(int height, int width, int starty, int startx, int boxed, c
     wd->state = state;
     wd->id = 0;
     wd->sel_id = 0;
-    wd->size = 0;
+    wd->dir_size = 0;
 }
 
 void render() {
     drawDirectory(windows.directory);
     drawWindow(windows.directory);
-
     drawWindow(windows.editor);
     drawWindow(windows.toppanel);
     drawWindow(windows.bottompanel);
+    refresh();
+    wrefresh(windows.toppanel->window);
+    wrefresh(windows.bottompanel->window);
+    wrefresh(windows.directory->window);
+    wrefresh(windows.editor->window);
 }
 
 void drawDirectory(windowData *wd) {
-    int i = 0;
     WINDOW* w = wd->window;
+    int max_height = LINES-2;
+    int i = wd->sel_id;
+    int extra_item = wd->dir_size - max_height;
+    int start_i = 0;
+    int end_i = max_height;
 
-    for(; i < wd->size; i++) {
-        if (wd->sel_id == i)
+    if (extra_item < max_height)
+        extra_item = max_height;
+    if (extra_item > 0) {
+        if (wd->sel_id > 1)
+            start_i = wd->sel_id - 2;
+        else
+            start_i = 0;
+        end_i = start_i + max_height;
+    }
+    if (end_i-1 > wd->dir_size) {
+        start_i += -end_i + wd->dir_size + 2;
+        end_i += -end_i + wd->dir_size;
+        if (start_i < 0)
+            start_i = 0;
+    }
+    wclear(w);
+    for (i = 0; i < end_i-start_i; i++) {
+        if (wd->sel_id == i+start_i)
             wattron(w, A_REVERSE);
-        mvwprintw(w, i + 1, 1, dirlines[i]);
-        wattroff(w, A_REVERSE);
+        if (isRegularFile(dirlines[i+start_i]) )
+            wattron(w, COLOR_PAIR(normal));
+        else
+            wattron(w, COLOR_PAIR(panel));
+        mvwprintw(w, i+1, 1, dirlines[i+start_i]);
+        wattroff(w, A_REVERSE | COLOR_PAIR(panel) | COLOR_PAIR(normal));
     }
 }
 
