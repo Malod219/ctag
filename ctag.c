@@ -1,4 +1,5 @@
 #include <ncurses.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
@@ -6,6 +7,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <signal.h>
+#include <id3v2lib.h>
 
 #define CURSOR_INVIS    0
 #define DIRECTORYLINES 1000
@@ -19,6 +21,10 @@ typedef struct windowData {
     int     id;
     int     sel_id;
     int     dir_size;
+    int     x;
+    int     y;
+    int     width;
+    int     height;
 } windowData;
 
 void createNewWindow(int height, int width, int starty, int startx, int boxed, char* title, int state, windowData *wd);
@@ -27,6 +33,7 @@ void drawWindow(windowData *wd);
 void initialiseColors(void);
 void getDirectoryInfo(int *size);
 void drawDirectory(windowData *wd);
+void drawEditor(windowData *wd);
 int isRegularFile(char* filename);
 int compare(const void* pa, const void *pb);
 void resizehandler(int sig);
@@ -43,9 +50,13 @@ void kbf_down(void);
 void kbf_resize(void);
 
 char dirlines[DIRECTORYLINES][MAXDIRWIDTH]; /* Consider a malloc approach, so it extends to any directory with size>1000 */
+char taglines[DIRECTORYLINES][MAXDIRWIDTH];
 
 
 char *filenameEditing;
+int fileSelected = 0;
+int fileDirty = 0;
+int updateEditor = 0;
 
 char * toptext = "Made by RisingThumb          https://risingthumb.xyz ";
 char * bottomtext = "TAB switch menu    Q to quit";
@@ -108,9 +119,10 @@ int main( int argc, char *argv[]) {
 
     terminal_start();
     createNewWindow(LINES-2, COLS/2, 1, 0, 1, "-Directory-", dir, &dirwin);
-    createNewWindow(LINES-2, COLS/2, 1, COLS/2, 1, "-Files-", edit, &editwin);
+    createNewWindow(LINES-2, COLS/2, 1, COLS/2, 1, "-Edit tags-", edit, &editwin);
     createNewWindow(1, COLS, 0, 0, 0, toptext, never, &panwin);
     createNewWindow(1, COLS, LINES-1, 0, 0, bottomtext, never, &panwinbottom);
+    kbf_resize();
 
     getDirectoryInfo(&windows.directory->dir_size);
     for(render(); (ch = tolower(getch())) != keyTable[0].key; render()){
@@ -148,6 +160,8 @@ void kbf_enter() {
         if ( isRegularFile(dirlines[*sel_id]) ) {
             windows.state = edit;
             filenameEditing = dirlines[*sel_id];
+            fileSelected = 1;
+            updateEditor = 1;
         }
         else {
             if (chdir(dirlines[*sel_id]) == 0)
@@ -166,14 +180,17 @@ void kbf_resize() {
     wclear(windows.toppanel->window);
     wclear(windows.bottompanel->window);
 
-    wresize(windows.directory->window, LINES-2, COLS/2);
-    mvwin(windows.directory->window, 1, 0);
-    wresize(windows.editor->window, LINES-2, COLS/2);
-    mvwin(windows.editor->window, 1, COLS/2);
-    wresize(windows.toppanel->window, 1, COLS);
-    mvwin(windows.toppanel->window, 0, 0);
-    wresize(windows.bottompanel->window, 1, COLS);
-    mvwin(windows.bottompanel->window, LINES-1, 0);
+    wresize(windows.directory->window, windows.directory->height=LINES/2, windows.directory->width=COLS);
+    mvwin(windows.directory->window, windows.directory->y=1, windows.directory->x=0);
+
+    wresize(windows.editor->window, windows.editor->height=LINES/2 - 1, windows.editor->width=COLS);
+    mvwin(windows.editor->window, windows.editor->y=LINES/2 + 1, windows.editor->x=0);
+
+    wresize(windows.toppanel->window, windows.toppanel->height=1, windows.toppanel->width=COLS);
+    mvwin(windows.toppanel->window, windows.toppanel->y=0, windows.toppanel->x=0);
+
+    wresize(windows.bottompanel->window, windows.bottompanel->height=1, windows.bottompanel->width=COLS);
+    mvwin(windows.bottompanel->window, windows.bottompanel->y=LINES-1, windows.bottompanel->x=0);
 }
 
 void kbf_tab() {
@@ -248,6 +265,10 @@ void createNewWindow(int height, int width, int starty, int startx, int boxed, c
 void render() {
     drawDirectory(windows.directory);
     drawWindow(windows.directory);
+    if (updateEditor) {
+        drawEditor(windows.editor);
+        updateEditor = 0;
+    }
     drawWindow(windows.editor);
     drawWindow(windows.toppanel);
     drawWindow(windows.bottompanel);
@@ -260,7 +281,7 @@ void render() {
 
 void drawDirectory(windowData *wd) {
     WINDOW* w = wd->window;
-    int max_height = LINES-2;
+    int max_height = wd->height;
     int i = wd->sel_id;
     int extra_item = wd->dir_size - max_height;
     int start_i = 0;
@@ -291,6 +312,43 @@ void drawDirectory(windowData *wd) {
             wattron(w, COLOR_PAIR(panel));
         mvwprintw(w, i+1, 1, dirlines[i+start_i]);
         wattroff(w, A_REVERSE | COLOR_PAIR(panel) | COLOR_PAIR(normal));
+    }
+}
+
+int ext_match(const char *name, const char *ext)
+{
+	size_t nl = strlen(name), el = strlen(ext);
+	return nl >= el && !strcmp(name + nl - el, ext);
+}
+
+void drawEditor(windowData *wd) {
+    int i = 0;
+    WINDOW* w = wd->window;
+    int mp3 = ext_match(filenameEditing, ".mp3");
+    printf("\n%d\n",mp3);
+    wclear(w);
+
+    int y = wd->y;
+
+    if (fileSelected && mp3) {
+        char* buf = strcat(getcwd(NULL, 0), "/");
+        char* cmd = malloc(strlen(buf) + strlen(filenameEditing) + 1);
+        strcpy(cmd, buf);
+        strcat(cmd, filenameEditing);
+        ID3v2_tag* tag = load_tag(filenameEditing);
+        if (tag == NULL) {
+            tag = new_tag();
+        }
+        ID3v2_frame* frame_of_import = NULL;
+        frame_of_import = tag_get_title(tag);
+        ID3v2_frame_text_content* content = parse_text_frame_content(frame_of_import);
+        mvwprintw(w, 1, 1, content->data);
+
+        free(cmd);
+        free(buf);
+        free(frame_of_import);
+        free(content);
+        free(tag);
     }
 }
 
